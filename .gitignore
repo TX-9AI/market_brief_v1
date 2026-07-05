@@ -1,0 +1,47 @@
+# market_brief/.gitignore — market_brief_v1.3.0
+
+# Secrets — never commit these
+.env
+*.env
+credentials.py
+cred.txt
+.gh_token
+*.pem
+*.key
+# One-shot deploy bootstrap holding real secrets — never commit. Any
+# bootstrap*.sh is ignored EXCEPT the placeholder template, which IS committed.
+bootstrap*.sh
+!bootstrap.example.sh
+
+# Database & logs — generated at runtime
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.log.*
+out/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+.venv/
+
+# Working backups (Jason's convention) — #file.py
+\#*.py
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Archives
+*.tar
+*.tar.gz
+*.zip

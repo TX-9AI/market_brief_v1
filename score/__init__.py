@@ -1,0 +1,1 @@
+# market_brief/score/__init__.py — market_brief_v1.0.0
