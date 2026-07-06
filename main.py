@@ -1,4 +1,4 @@
-# market_brief/main.py — market_brief_v1.4.0
+# market_brief/main.py — market_brief_v1.5.0
 """
 Orchestrator.
 
@@ -14,7 +14,10 @@ CLI:
     python main.py --intraday     # premium shock-scan (lightweight)
     python main.py --selftest     # offline smoke test, no network/keys
 
-Last updated: 2026-07-04
+v1.5.0 — 2026-07-05 — emit full-slate report.json for day_trader_pro
+         selection (report/emit.py), written on scheduled (non-dry) runs.
+
+Last updated: 2026-07-05
 """
 
 from __future__ import annotations
@@ -121,6 +124,11 @@ def run_scheduled(tier: config.TierSpec, secrets, dry_run: bool) -> int:
         # tier feature: machine-readable output for the options suite
         if tier.json_output:
             _write_json(bluf, macro_events, earnings_events, tier, report_dt_et, dry_run)
+
+        # day_trader_pro: full-slate report.json for morning selection
+        if not dry_run:
+            from report import emit
+            emit.emit_report(composites, macro_events, earnings_events, report_dt_et)
 
         sent = telegram.send(text, secrets)
 
