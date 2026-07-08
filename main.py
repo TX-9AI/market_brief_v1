@@ -1,9 +1,9 @@
-# market_brief/main.py — market_brief_v1.5.0
+# market_brief/main.py — market_brief_v1.6.0
 """
 Orchestrator.
 
 Pipeline (all gating driven by the active tier):
-    ingest -> dedup/cluster -> cascade classify -> persist signals
+    ingest -> classify per ticker (concurrent) -> persist signals
            -> macro lookup -> aggregate (decay + surprise)
            -> build report -> deliver (Telegram) -> record
 
@@ -16,8 +16,12 @@ CLI:
 
 v1.5.0 — 2026-07-05 — emit full-slate report.json for day_trader_pro
          selection (report/emit.py), written on scheduled (non-dry) runs.
+v1.6.0 — 2026-07-08 — classify per ticker (concurrent) instead of dedup ->
+         hundreds of per-cluster calls. data/dedup.py retired; the middle
+         collapses to group-by-ticker -> one call per name. Signal shape
+         unchanged, so aggregate/report/db/intraday are untouched.
 
-Last updated: 2026-07-05
+Last updated: 2026-07-08
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ import sys
 from zoneinfo import ZoneInfo
 
 import config
-from data import sources, dedup, macro_cal, earnings_cal, price_data
+from data import sources, macro_cal, earnings_cal, price_data
 from classify import pipeline
 from classify.llm_client import LLMClient
 from score import aggregate
@@ -55,18 +59,17 @@ def run_scheduled(tier: config.TierSpec, secrets, dry_run: bool) -> int:
         print(f"[main] tier={tier.name} cutoff={cutoff.isoformat()} "
               f"lookback={lookback_h}h dry_run={dry_run}")
 
-        # 1-2. ingest + dedup
+        # 1-2. ingest
         articles = sources.fetch_all(secrets, tier, lookback_h)
         source_counts: dict[str, int] = {}
         for a in articles:
             source_counts[a.source] = source_counts.get(a.source, 0) + 1
-        clusters = dedup.cluster_articles(articles)
 
-        # 3. classify (cascade)
+        # 3. classify — one concurrent pass per ticker (grouped from the feed)
         client = LLMClient(secrets.anthropic_key)
-        signals = pipeline.classify_clusters(
-            [c.to_dict() for c in clusters], client, tier)
-        print(f"[main] {len(signals)} signals from {len(clusters)} clusters")
+        signals = pipeline.classify_by_ticker(articles, client, tier)
+        print(f"[main] {len(signals)} signals across "
+              f"{len({s.ticker for s in signals})} tickers")
         if signals and not dry_run:
             db.insert_signals(con, signals, tier.name, now)
 
@@ -225,9 +228,7 @@ def run_intraday(tier: config.TierSpec, secrets, dry_run: bool) -> int:
 
         # ---- news-based intraday shocks ---------------------------------
         articles = sources.fetch_all(secrets, tier, 2)  # last 2h
-        clusters = dedup.cluster_articles(articles)
-        signals = pipeline.classify_clusters(
-            [c.to_dict() for c in clusters], client, tier)
+        signals = pipeline.classify_by_ticker(articles, client, tier)
 
         # persist ALL intraday signals so they feed the next morning rollup
         if signals and not dry_run:
@@ -377,7 +378,7 @@ def _sample_shock_text() -> str:
 
 
 def run_selftest() -> int:
-    """Offline: exercise dedup + aggregate + report with no network/keys."""
+    """Offline: exercise aggregate + report + validation with no network/keys."""
     tier = config.TIERS["mid"]
     comps, macro_events, earnings_events, report_et = _build_sample(tier)
     text, bluf = builder.build_report(

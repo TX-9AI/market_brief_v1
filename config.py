@@ -102,16 +102,9 @@ DEFAULT_HALF_LIFE = HALF_LIFE_HOURS["GENERAL"]
 # --------------------------------------------------------------------------
 DIRECT_MENTION_WEIGHT = 1.00     # ticker named in the article
 SECTOR_SPILLOVER_WEIGHT = 0.35   # discounted peer bleed
-CLUSTER_SIZE_CAP = 8             # coverage weight saturates (log-ish) here
-
-# Cap how many clusters reach the (per-cluster) Haiku triage — the cascade's
-# bottleneck. On a loud news morning dedup can yield 600+ clusters; classifying
-# all of them is hundreds of API round-trips (~17 min wall on 2026-07-08, almost
-# all I/O wait). We ALWAYS keep every cluster that maps to the universe
-# (non-empty tickers_hint — a free pre-API relevance flag), then fill the rest of
-# this budget with the largest untagged clusters by coverage. Set to 0 to
-# disable the cap (classify everything, old behavior).
-CLASSIFY_MAX_CLUSTERS = 200
+CLUSTER_SIZE_CAP = 8             # coverage weight saturates (log-ish) here:
+                                 # per-ticker article count above this adds no
+                                 # further coverage bonus.
 
 
 # --------------------------------------------------------------------------
@@ -328,3 +321,12 @@ REPORT_MINUTE = 15
 LOOKBACK_HOURS = 24          # how far back a scheduled run ingests
 DRY_RUN = os.environ.get("SCREENER_DRY_RUN", "0") == "1"   # print instead of send
 HTTP_TIMEOUT = 20
+
+# Per-call ceiling on an Anthropic request (seconds). A hung call fails fast and
+# is retried by the client wrapper rather than stalling the whole run. This is
+# the durability fix — one slow API call can never block the brief again.
+LLM_TIMEOUT_S = 30
+
+# The per-ticker classify pass runs the ~29 names CONCURRENTLY. This bounds how
+# many Anthropic calls are in flight at once (thread pool size).
+LLM_MAX_WORKERS = 12
