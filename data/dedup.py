@@ -64,6 +64,7 @@ class Cluster:
             "body": self.body,
             "size": self.size,
             "baseline_hint": hint,
+            "tickers_hint": list(self.tickers_hint),
         }
 
 
