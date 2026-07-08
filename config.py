@@ -104,6 +104,15 @@ DIRECT_MENTION_WEIGHT = 1.00     # ticker named in the article
 SECTOR_SPILLOVER_WEIGHT = 0.35   # discounted peer bleed
 CLUSTER_SIZE_CAP = 8             # coverage weight saturates (log-ish) here
 
+# Cap how many clusters reach the (per-cluster) Haiku triage — the cascade's
+# bottleneck. On a loud news morning dedup can yield 600+ clusters; classifying
+# all of them is hundreds of API round-trips (~17 min wall on 2026-07-08, almost
+# all I/O wait). We ALWAYS keep every cluster that maps to the universe
+# (non-empty tickers_hint — a free pre-API relevance flag), then fill the rest of
+# this budget with the largest untagged clusters by coverage. Set to 0 to
+# disable the cap (classify everything, old behavior).
+CLASSIFY_MAX_CLUSTERS = 200
+
 
 # --------------------------------------------------------------------------
 # 5. CASCADE THRESHOLDS  (drive Haiku -> Sonnet escalation)
