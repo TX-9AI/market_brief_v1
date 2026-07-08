@@ -1,10 +1,10 @@
-# market_brief/classify/scope.py — market_brief_v1.0.0
+# market_brief/classify/scope.py — market_brief_v2.0.0
 """
-Stage 2 of the cascade — Sonnet deep pass.
+Stage 2 of the cascade — Sonnet deep pass, PER TICKER.
 
-Only runs on mid/premium, and (mid) only for events that cleared the
-magnitude floor. Adds the reasoning Haiku is shallow on:
-  - refined magnitude (is this really a mover, or priced-in noise?)
+Only runs on mid/premium/platinum, and (mid) only for tickers that cleared the
+magnitude floor. Adds the reasoning Haiku is shallow on, for one name:
+  - refined magnitude (really a mover, or priced-in noise?)
   - scope: ISOLATED (company-specific) vs SECTOR (name the sector)
   - spillover decision (LLM says "spills?"; peer_map supplies WHO)
   - confidence
@@ -12,7 +12,7 @@ magnitude floor. Adds the reasoning Haiku is shallow on:
 The peer ENUMERATION stays deterministic (peer_map). Sonnet decides only
 whether spillover applies and which sector.
 
-Last updated: 2026-07-04
+v2.0.0 — 2026-07-08 — per-ticker deep pass (was per-cluster deep_assess).
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from classify import peer_map
 from classify.llm_client import LLMClient
 
 _SYSTEM = (
-    "You are a senior sell-side analyst assessing whether a news event is "
-    "company-specific or sector-wide, and how market-moving it truly is for "
+    "You are a senior sell-side analyst assessing one ticker's news: whether it "
+    "is company-specific or sector-wide, and how market-moving it truly is for "
     "an options desk. You are skeptical of routine/priced-in news and you "
     "distinguish signal from wire noise. Reply with JSON only, no prose."
 )
@@ -33,15 +33,15 @@ _SYSTEM = (
 _KNOWN_SECTORS = ", ".join(config.SECTORS.keys())
 
 
-def _user_prompt(title: str, body: str, tickers: list[str], et: str) -> str:
-    return f"""Direct tickers already identified: {', '.join(tickers) or 'none'}
-Event type: {et}
+def _user_prompt(ticker: str, headlines: str, tri: dict[str, Any]) -> str:
+    return f"""TICKER: {ticker}
+Event type (from triage): {tri.get('event_type', 'GENERAL')}
 Known sectors (use these labels if SECTOR): {_KNOWN_SECTORS}
 
-HEADLINE: {title}
-BODY: {body[:2500]}
+RECENT HEADLINES for {ticker}:
+{headlines}
 
-Assess and return JSON:
+Assess {ticker}'s news and return JSON:
 {{
   "magnitude": <float 0.0..1.0, refined true market impact>,
   "sentiment": <float -1.0..1.0, refined>,
@@ -53,23 +53,23 @@ Assess and return JSON:
 }}"""
 
 
-def deep_assess(
+def deep_assess_ticker(
     client: LLMClient,
     model: str,
-    title: str,
-    body: str,
+    ticker: str,
+    headlines: str,
     triage: dict[str, Any],
 ) -> dict[str, Any]:
     raw = client.json_call(
         model=model,
         system=_SYSTEM,
-        user=_user_prompt(title, body, triage["tickers"], triage["event_type"]),
+        user=_user_prompt(ticker, headlines, triage),
         max_tokens=500,
     )
-    return _sanitize(raw, triage)
+    return _sanitize(raw, ticker, triage)
 
 
-def _sanitize(raw: Any, triage: dict[str, Any]) -> dict[str, Any]:
+def _sanitize(raw: Any, ticker: str, triage: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         # fall back to triage numbers, no spillover
         return {"magnitude": triage["magnitude"], "sentiment": triage["sentiment"],
@@ -94,8 +94,7 @@ def _sanitize(raw: Any, triage: dict[str, Any]) -> dict[str, Any]:
     if spills:
         sector_key = peer_map.resolve_sector_name(raw.get("sector", ""))
         if sector_key:
-            exclude = set(triage["tickers"])
-            spillover_tickers = peer_map.peers_for_sector(sector_key, exclude=exclude)
+            spillover_tickers = peer_map.peers_for_sector(sector_key, exclude={ticker})
         else:
             spills = False  # couldn't place the sector -> no spillover
 

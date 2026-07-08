@@ -1,31 +1,46 @@
-# market_brief/classify/pipeline.py — market_brief_v1.0.0
+# market_brief/classify/pipeline.py — market_brief_v2.0.0
 """
-The cascade orchestrator — turns clustered events into weighted SIGNAL rows,
+The cascade orchestrator — turns per-ticker news into weighted SIGNAL rows,
 gated entirely by the active tier.
 
-    free    : Haiku triage only. Spillover = static flat discount (no reason).
-    mid     : Haiku triage -> Sonnet on events clearing SONNET_MAGNITUDE_FLOOR.
+    free    : Haiku triage per ticker. Spillover = static flat discount.
+    mid     : Haiku triage -> Sonnet on tickers clearing SONNET_MAGNITUDE_FLOOR.
               Real ISOLATED/SECTOR reasoning + peer expansion.
-    premium : Haiku triage -> Sonnet on EVERY mapped event.
+    premium : Haiku triage -> Sonnet on EVERY ticker with news.
+
+Design (v2): the news feed is fetched PER TICKER (Finnhub /company-news per
+symbol), so we group articles by name and make ONE model call per ticker with
+its recent headlines — the ~29 names run CONCURRENTLY. This replaces the old
+"dedup into hundreds of cross-ticker clusters, then one call per cluster"
+middle, which turned a loud news morning into hundreds of serial API calls.
 
 A "signal" is one (ticker, sentiment, magnitude, weight, ...) tuple. Direct
-mentions get DIRECT_MENTION_WEIGHT; sector spillover gets the discounted
-SECTOR_SPILLOVER_WEIGHT. Cluster size adds a saturating coverage bonus.
+signals get DIRECT_MENTION_WEIGHT; sector spillover gets the discounted
+SECTOR_SPILLOVER_WEIGHT. Per-ticker article count adds a saturating coverage
+bonus. The Signal shape is unchanged, so db / aggregate / report / intraday
+all consume it exactly as before.
 
-Last updated: 2026-07-08 — cap clusters reaching the Haiku triage via
-_select_for_classification (CLASSIFY_MAX_CLUSTERS): keep all universe-tagged,
-fill by coverage. Bounds runtime on loud news mornings (664 clusters -> 17 min).
+v2.0.0 — 2026-07-08 — per-ticker classify (classify_by_ticker) replacing the
+         per-cluster cascade (classify_clusters). dedup is no longer used.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any
 
 import config
 from classify import peer_map, triage as triage_mod, scope as scope_mod
 from classify.llm_client import LLMClient
+
+# forward ref only for typing; avoids importing data.sources at module load
+try:  # pragma: no cover
+    from data.sources import Article
+except Exception:  # pragma: no cover
+    Article = Any  # type: ignore
 
 
 @dataclass
@@ -39,136 +54,130 @@ class Signal:
     is_spillover: bool
     model_used: str
     confidence: float
-    cluster_id: int
+    cluster_id: int | None        # stable id per (ticker, lead headline)
     one_line: str = ""
     rationale: str = ""
 
 
-def _coverage_bonus(cluster_size: int) -> float:
-    """Saturating coverage weight: broad wire pickup => slightly higher weight."""
-    capped = min(cluster_size, config.CLUSTER_SIZE_CAP)
+# how many headlines to hand the model per ticker (bounds prompt size)
+_MAX_HEADLINES = 12
+_UNIVERSE = set(config.UNIVERSE)
+
+
+def _coverage_bonus(article_count: int) -> float:
+    """Saturating coverage weight: a name with broad wire pickup gets a slightly
+    higher weight than a single-source mention."""
+    capped = min(article_count, config.CLUSTER_SIZE_CAP)
     return 1.0 + 0.15 * math.log1p(capped - 1) if capped > 1 else 1.0
 
 
-def _select_for_classification(
-    clusters: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Bound how many clusters reach the per-cluster LLM triage (the cascade
-    bottleneck). Keeps EVERY cluster that maps to our universe (non-empty
-    tickers_hint — a free, pre-API relevance flag; Finnhub already filters
-    `related` to UNIVERSE at ingest), then fills the remaining
-    CLASSIFY_MAX_CLUSTERS budget with the largest untagged clusters by coverage.
-
-    Loud-but-irrelevant noise is dropped before it costs an API call; a
-    quiet-but-relevant name is never dropped. A universe-tagged cluster is never
-    sacrificed to hit the cap (effective max = max(cap, #tagged)), which in
-    practice stays small since the universe is ~30 names. cap<=0 disables it.
-    """
-    cap = getattr(config, "CLASSIFY_MAX_CLUSTERS", 0) or 0
-    total = len(clusters)
-    # "Relevant" = the cluster's provider tags intersect our traded UNIVERSE.
-    # Enforced HERE, not trusted from ingest: some source paths (e.g. Alpha
-    # Vantage) populate tickers_hint with raw provider tickers not filtered to
-    # UNIVERSE, so a bare "has any hint" test would mark nearly everything
-    # relevant and the cap would never bite.
-    uni = set(config.UNIVERSE)
-
-    def _relevant(c: dict[str, Any]) -> bool:
-        return bool(uni.intersection(c.get("tickers_hint") or ()))
-
-    tagged = sorted((c for c in clusters if _relevant(c)),
-                    key=lambda c: c.get("size", 1), reverse=True)
-    rest   = sorted((c for c in clusters if not _relevant(c)),
-                    key=lambda c: c.get("size", 1), reverse=True)
-
-    if cap <= 0:
-        selected = tagged + rest
-    else:
-        room = max(cap - len(tagged), 0)
-        selected = tagged + rest[:room]
-
-    print(f"[cascade] classifying {len(selected)}/{total} clusters "
-          f"({len(tagged)} universe-tagged + {len(selected) - len(tagged)} by coverage)")
-    return selected
+def _digest(arts: list) -> str:
+    """Compact, bounded headline digest for one ticker: most-recent / richest
+    first, each 'HEADLINE — summary(trimmed)'."""
+    ordered = sorted(arts, key=lambda a: (a.published_utc, len(a.body)), reverse=True)
+    lines = []
+    for a in ordered[:_MAX_HEADLINES]:
+        body = (a.body or "").strip().replace("\n", " ")
+        line = a.title.strip()
+        if body:
+            line += f" — {body[:200]}"
+        lines.append(f"- {line}")
+    return "\n".join(lines)
 
 
-def classify_clusters(
-    clusters: list[dict[str, Any]],
+def _baseline_hint(arts: list) -> str:
+    vals = [a.baseline_sentiment for a in arts if a.baseline_sentiment is not None]
+    if not vals:
+        return ""
+    return f"avg provider sentiment {sum(vals) / len(vals):+.2f} over {len(vals)} tagged items"
+
+
+def _cluster_id(ticker: str, digest: str) -> int:
+    """Stable 31-bit id per (ticker, lead headline) so intraday dedup fires once
+    per distinct story but re-alerts on a genuinely new lead."""
+    lead = digest.split("\n", 1)[0]
+    h = hashlib.sha1(f"{ticker}|{lead}".encode()).hexdigest()[:8]
+    return int(h, 16) & 0x7FFFFFFF
+
+
+def _classify_one_ticker(ticker: str, arts: list, client: LLMClient,
+                         tier: config.TierSpec) -> list[Signal]:
+    digest = _digest(arts)
+    tri = triage_mod.triage_ticker(
+        client, tier.triage_model, ticker, digest, _baseline_hint(arts))
+
+    # nothing material -> no signal for this name
+    if tri["magnitude"] <= 0.0 and abs(tri["sentiment"]) < 1e-6:
+        return []
+
+    cov = _coverage_bonus(len(arts))
+    model_used = tier.triage_model
+    sent, mag = tri["sentiment"], tri["magnitude"]
+    conf, scope_label, rationale = 0.5, "ISOLATED", ""
+    spill_tickers: list[str] = []
+
+    do_deep = tier.deep_model is not None and (
+        tier.deep_on_everything or mag >= config.SONNET_MAGNITUDE_FLOOR)
+
+    if do_deep:
+        deep = scope_mod.deep_assess_ticker(
+            client, tier.deep_model, ticker, digest, tri)
+        model_used = tier.deep_model
+        sent, mag, conf = deep["sentiment"], deep["magnitude"], deep["confidence"]
+        scope_label, rationale = deep["scope"], deep["rationale"]
+        spill_tickers = deep["spillover_tickers"] if tier.llm_spillover else []
+    elif not tier.llm_spillover and mag >= 0.6:
+        # free tier: cheap static flat spillover on strong single-name news
+        spill_tickers = sorted(set(peer_map.peers_for(ticker)) - {ticker})
+
+    cid = _cluster_id(ticker, digest)
+    out = [Signal(
+        ticker=ticker, sentiment=sent, magnitude=mag,
+        weight=config.DIRECT_MENTION_WEIGHT * cov,
+        event_type=tri["event_type"], scope=scope_label,
+        is_spillover=False, model_used=model_used, confidence=conf,
+        cluster_id=cid, one_line=tri["one_line"], rationale=rationale,
+    )]
+    for pt in spill_tickers:
+        out.append(Signal(
+            ticker=pt, sentiment=sent, magnitude=mag,
+            weight=config.SECTOR_SPILLOVER_WEIGHT * cov,
+            event_type=tri["event_type"], scope="SPILL",
+            is_spillover=True, model_used=model_used, confidence=conf * 0.8,
+            cluster_id=cid, one_line=tri["one_line"], rationale=rationale,
+        ))
+    return out
+
+
+def classify_by_ticker(
+    articles: list,
     client: LLMClient,
     tier: config.TierSpec,
 ) -> list[Signal]:
-    """
-    clusters: list of dicts with keys:
-        id, canonical_title, body, size, baseline_hint, tickers_hint
-    Returns a flat list of Signal rows.
-    """
+    """Group articles by universe ticker, classify each name ONCE (Haiku, with a
+    per-tier Sonnet escalation), running the names concurrently. Returns a flat
+    list of Signal rows — same shape the rest of the pipeline already consumes."""
+    by_ticker: dict[str, list] = {}
+    for a in articles:
+        for t in (getattr(a, "tickers_hint", None) or ()):
+            if t in _UNIVERSE:
+                by_ticker.setdefault(t, []).append(a)
+
+    tickers = sorted(by_ticker)
+    print(f"[classify] {len(tickers)} tickers with news from {len(articles)} "
+          f"articles ({tier.name} tier, ≤{config.LLM_MAX_WORKERS} concurrent)")
+    if not tickers:
+        return []
+
     signals: list[Signal] = []
-
-    for cl in _select_for_classification(clusters):
-        cid = cl["id"]
-        size = cl.get("size", 1)
-        cov = _coverage_bonus(size)
-
-        tri = triage_mod.triage_event(
-            client, tier.triage_model,
-            cl["canonical_title"], cl.get("body", ""),
-            baseline_hint=cl.get("baseline_hint", ""),
-        )
-        if not tri["tickers"]:
-            continue  # nothing in our universe -> drop
-
-        # ---- decide whether to escalate to Sonnet -----------------------
-        do_deep = False
-        if tier.deep_model is not None:
-            if tier.deep_on_everything:
-                do_deep = True
-            elif tri["magnitude"] >= config.SONNET_MAGNITUDE_FLOOR:
-                do_deep = True
-
-        if do_deep:
-            deep = scope_mod.deep_assess(
-                client, tier.deep_model,
-                cl["canonical_title"], cl.get("body", ""), tri,
-            )
-            model_used = tier.deep_model
-            sent, mag = deep["sentiment"], deep["magnitude"]
-            conf = deep["confidence"]
-            scope_label = deep["scope"]
-            spill_tickers = deep["spillover_tickers"] if tier.llm_spillover else []
-            rationale = deep["rationale"]
-        else:
-            model_used = tier.triage_model
-            sent, mag = tri["sentiment"], tri["magnitude"]
-            conf = 0.5
-            scope_label = "ISOLATED"
-            rationale = ""
-            # free tier: cheap static flat spillover on strong single-name news
-            if not tier.llm_spillover and mag >= 0.6:
-                spill_tickers = []
-                for t in tri["tickers"]:
-                    spill_tickers.extend(peer_map.peers_for(t))
-                spill_tickers = sorted(set(spill_tickers) - set(tri["tickers"]))
-            else:
-                spill_tickers = []
-
-        # ---- emit direct-mention signals --------------------------------
-        for t in tri["tickers"]:
-            signals.append(Signal(
-                ticker=t, sentiment=sent, magnitude=mag,
-                weight=config.DIRECT_MENTION_WEIGHT * cov,
-                event_type=tri["event_type"], scope=scope_label,
-                is_spillover=False, model_used=model_used, confidence=conf,
-                cluster_id=cid, one_line=tri["one_line"], rationale=rationale,
-            ))
-
-        # ---- emit discounted spillover signals --------------------------
-        for t in spill_tickers:
-            signals.append(Signal(
-                ticker=t, sentiment=sent, magnitude=mag,
-                weight=config.SECTOR_SPILLOVER_WEIGHT * cov,
-                event_type=tri["event_type"], scope="SPILL",
-                is_spillover=True, model_used=model_used, confidence=conf * 0.8,
-                cluster_id=cid, one_line=tri["one_line"], rationale=rationale,
-            ))
+    workers = max(1, min(config.LLM_MAX_WORKERS, len(tickers)))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [ex.submit(_classify_one_ticker, t, by_ticker[t], client, tier)
+                   for t in tickers]
+        for fut in futures:
+            try:
+                signals.extend(fut.result())
+            except Exception as exc:   # one bad ticker never sinks the run
+                print(f"[classify] ticker classify error: {exc}")
 
     return signals

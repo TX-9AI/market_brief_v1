@@ -1,21 +1,24 @@
-# market_brief/classify/triage.py — market_brief_v1.0.0
+# market_brief/classify/triage.py — market_brief_v2.0.0
 """
-Stage 1 of the cascade — Haiku triage.
+Stage 1 of the cascade — Haiku triage, PER TICKER.
 
-For a clustered event, extract cheaply and fast:
-  - which in-universe tickers are DIRECTLY implicated
+The universe is fetched per-ticker (Finnhub /company-news per symbol), so we
+already know which name each headline belongs to. Rather than re-derive the
+ticker for hundreds of clusters, we hand Haiku ONE ticker and its recent
+headlines and ask for the NET market impact for THAT name:
   - sentiment  (-1.0 .. +1.0)
-  - magnitude  ( 0.0 .. 1.0 : routine vs genuinely market-moving)
+  - magnitude  ( 0.0 .. 1.0 : 0 = routine/no real news, 1 = major mover)
   - event_type (bucket driving the decay half-life)
+  - one_line   (why it matters)
 
 Runs on EVERY tier (free = this only). Output gates escalation to Sonnet.
 
-Last updated: 2026-07-04
+v2.0.0 — 2026-07-08 — per-ticker triage (was per-cluster triage_event); ticker
+         is known, so no ticker extraction — just judge its news.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import config
@@ -25,58 +28,54 @@ _EVENT_TYPES = list(config.HALF_LIFE_HOURS.keys())
 
 _SYSTEM = (
     "You are a fast financial-news triage classifier for an options trading "
-    "desk. You tag news to a FIXED universe of tickers and score it. You are "
-    "terse, calibrated, and you never invent tickers outside the provided "
-    "universe. Reply with JSON only, no prose."
+    "desk. You are given ONE ticker and its recent headlines; judge the NET "
+    "market impact for THAT ticker today. You are terse and calibrated, "
+    "skeptical of routine or priced-in news. Reply with JSON only, no prose."
 )
 
 
-def _user_prompt(title: str, body: str, universe: list[str], hint: str) -> str:
-    return f"""UNIVERSE (only tag from this list): {', '.join(universe)}
+def _user_prompt(ticker: str, headlines: str, hint: str) -> str:
+    return f"""TICKER: {ticker}
 
 EVENT_TYPES (pick the single best): {', '.join(_EVENT_TYPES)}
 
-Baseline provider hint (may be empty/noisy): {hint or 'none'}
+Baseline provider sentiment hint (may be empty/noisy): {hint or 'none'}
 
-HEADLINE: {title}
-BODY: {body[:1500]}
+RECENT HEADLINES for {ticker}:
+{headlines}
 
-Return JSON:
+Judge the NET, market-moving impact for {ticker} across these headlines and
+return JSON:
 {{
-  "tickers": ["<direct mentions from UNIVERSE only>"],
-  "sentiment": <float -1.0..1.0, market impact direction>,
-  "magnitude": <float 0.0..1.0, 0=routine/noise, 1=major mover>,
+  "sentiment": <float -1.0..1.0, impact direction>,
+  "magnitude": <float 0.0..1.0, 0=routine/no real news, 1=major mover>,
   "event_type": "<one of EVENT_TYPES>",
-  "one_line": "<<=15 word why-it-matters>"
+  "one_line": "<<=15 word why-it-matters, empty if nothing material>"
 }}
-If no universe ticker is implicated, return "tickers": []."""
+If there is no material, market-moving news for {ticker}, return magnitude 0."""
 
 
-def triage_event(
+def triage_ticker(
     client: LLMClient,
     model: str,
-    title: str,
-    body: str,
+    ticker: str,
+    headlines: str,
     baseline_hint: str = "",
-    universe: list[str] | None = None,
 ) -> dict[str, Any]:
-    universe = universe or config.UNIVERSE
     raw = client.json_call(
         model=model,
         system=_SYSTEM,
-        user=_user_prompt(title, body, universe, baseline_hint),
+        user=_user_prompt(ticker, headlines, baseline_hint),
         max_tokens=400,
     )
-    return _sanitize(raw, universe)
+    return _sanitize(raw)
 
 
-def _sanitize(raw: Any, universe: list[str]) -> dict[str, Any]:
+def _sanitize(raw: Any) -> dict[str, Any]:
     """Never trust raw model output — clamp and whitelist."""
     if not isinstance(raw, dict):
-        return {"tickers": [], "sentiment": 0.0, "magnitude": 0.0,
+        return {"sentiment": 0.0, "magnitude": 0.0,
                 "event_type": "GENERAL", "one_line": ""}
-    uni = set(universe)
-    tickers = [t for t in raw.get("tickers", []) if isinstance(t, str) and t in uni]
     try:
         sent = max(-1.0, min(1.0, float(raw.get("sentiment", 0.0))))
     except (TypeError, ValueError):
@@ -89,5 +88,4 @@ def _sanitize(raw: Any, universe: list[str]) -> dict[str, Any]:
     if et not in config.HALF_LIFE_HOURS:
         et = "GENERAL"
     one = str(raw.get("one_line", ""))[:120]
-    return {"tickers": tickers, "sentiment": sent, "magnitude": mag,
-            "event_type": et, "one_line": one}
+    return {"sentiment": sent, "magnitude": mag, "event_type": et, "one_line": one}

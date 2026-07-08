@@ -19,6 +19,8 @@ import re
 import time
 from typing import Any
 
+import config
+
 try:
     import anthropic
 except ImportError:  # surfaced clearly at startup by main.py
@@ -39,7 +41,13 @@ class LLMClient:
             raise RuntimeError(
                 "ANTHROPIC_API_KEY is not set. Every tier uses at least Haiku."
             )
-        self._client = anthropic.Anthropic(api_key=api_key)
+        # timeout: a hung call fails fast and is retried below, instead of
+        # blocking the whole run. max_retries=0: our wrapper owns the retry loop.
+        self._client = anthropic.Anthropic(
+            api_key=api_key,
+            timeout=config.LLM_TIMEOUT_S,
+            max_retries=0,
+        )
         self._max_retries = max_retries
 
     def json_call(
