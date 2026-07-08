@@ -66,9 +66,19 @@ def _select_for_classification(
     """
     cap = getattr(config, "CLASSIFY_MAX_CLUSTERS", 0) or 0
     total = len(clusters)
-    tagged = sorted((c for c in clusters if c.get("tickers_hint")),
+    # "Relevant" = the cluster's provider tags intersect our traded UNIVERSE.
+    # Enforced HERE, not trusted from ingest: some source paths (e.g. Alpha
+    # Vantage) populate tickers_hint with raw provider tickers not filtered to
+    # UNIVERSE, so a bare "has any hint" test would mark nearly everything
+    # relevant and the cap would never bite.
+    uni = set(config.UNIVERSE)
+
+    def _relevant(c: dict[str, Any]) -> bool:
+        return bool(uni.intersection(c.get("tickers_hint") or ()))
+
+    tagged = sorted((c for c in clusters if _relevant(c)),
                     key=lambda c: c.get("size", 1), reverse=True)
-    rest   = sorted((c for c in clusters if not c.get("tickers_hint")),
+    rest   = sorted((c for c in clusters if not _relevant(c)),
                     key=lambda c: c.get("size", 1), reverse=True)
 
     if cap <= 0:
