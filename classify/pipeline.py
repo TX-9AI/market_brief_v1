@@ -12,7 +12,9 @@ A "signal" is one (ticker, sentiment, magnitude, weight, ...) tuple. Direct
 mentions get DIRECT_MENTION_WEIGHT; sector spillover gets the discounted
 SECTOR_SPILLOVER_WEIGHT. Cluster size adds a saturating coverage bonus.
 
-Last updated: 2026-07-04
+Last updated: 2026-07-08 — cap clusters reaching the Haiku triage via
+_select_for_classification (CLASSIFY_MAX_CLUSTERS): keep all universe-tagged,
+fill by coverage. Bounds runtime on loud news mornings (664 clusters -> 17 min).
 """
 
 from __future__ import annotations
@@ -48,6 +50,38 @@ def _coverage_bonus(cluster_size: int) -> float:
     return 1.0 + 0.15 * math.log1p(capped - 1) if capped > 1 else 1.0
 
 
+def _select_for_classification(
+    clusters: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Bound how many clusters reach the per-cluster LLM triage (the cascade
+    bottleneck). Keeps EVERY cluster that maps to our universe (non-empty
+    tickers_hint — a free, pre-API relevance flag; Finnhub already filters
+    `related` to UNIVERSE at ingest), then fills the remaining
+    CLASSIFY_MAX_CLUSTERS budget with the largest untagged clusters by coverage.
+
+    Loud-but-irrelevant noise is dropped before it costs an API call; a
+    quiet-but-relevant name is never dropped. A universe-tagged cluster is never
+    sacrificed to hit the cap (effective max = max(cap, #tagged)), which in
+    practice stays small since the universe is ~30 names. cap<=0 disables it.
+    """
+    cap = getattr(config, "CLASSIFY_MAX_CLUSTERS", 0) or 0
+    total = len(clusters)
+    tagged = sorted((c for c in clusters if c.get("tickers_hint")),
+                    key=lambda c: c.get("size", 1), reverse=True)
+    rest   = sorted((c for c in clusters if not c.get("tickers_hint")),
+                    key=lambda c: c.get("size", 1), reverse=True)
+
+    if cap <= 0:
+        selected = tagged + rest
+    else:
+        room = max(cap - len(tagged), 0)
+        selected = tagged + rest[:room]
+
+    print(f"[cascade] classifying {len(selected)}/{total} clusters "
+          f"({len(tagged)} universe-tagged + {len(selected) - len(tagged)} by coverage)")
+    return selected
+
+
 def classify_clusters(
     clusters: list[dict[str, Any]],
     client: LLMClient,
@@ -55,12 +89,12 @@ def classify_clusters(
 ) -> list[Signal]:
     """
     clusters: list of dicts with keys:
-        id, canonical_title, body, size, baseline_hint
+        id, canonical_title, body, size, baseline_hint, tickers_hint
     Returns a flat list of Signal rows.
     """
     signals: list[Signal] = []
 
-    for cl in clusters:
+    for cl in _select_for_classification(clusters):
         cid = cl["id"]
         size = cl.get("size", 1)
         cov = _coverage_bonus(size)
