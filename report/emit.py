@@ -1,4 +1,4 @@
-# market_brief/report/emit.py — market_brief_v1.2.0
+# market_brief/report/emit.py — market_brief_v1.3.0
 """
 Machine-readable emit of the finished brief.
 
@@ -20,7 +20,11 @@ Output path resolution (first that is set):
     2. $DTP_REPORT_JSON        <- set this on the reporter so both projects agree
     3. ./report.json           (next to the brief; fallback)
 
-Last updated: 2026-07-05
+v1.3.0 — 2026-07-15 — add `move_ranked` sidecar: pre-market top-8 by
+         move-probability (catalyst + event pressure + conviction) for
+         day_trader_pro's exactly-8 discretionary wake and the bot's signed
+         setup-score nudge. Pure addition — scores/tickers/Telegram unchanged.
+Last updated: 2026-07-15
 """
 
 from __future__ import annotations
@@ -50,6 +54,56 @@ def _g(obj, name, default=None):
     if isinstance(obj, dict):
         return obj.get(name, default)
     return getattr(obj, name, default)
+
+
+def _move_ranked(tickers, earn_today_syms, fomc, landmines, top_n=8):
+    """v1.3 — pre-market MOVE-PROBABILITY ranking for day_trader_pro selection.
+
+    "Likely to see a move at the RTH open" — a blend, from fields the brief
+    already computes, of: directional catalyst strength (|signed composite|),
+    event pressure (earnings TODAY, macro landmines still ahead, FOMC), and
+    conviction/coverage. NOT a volume forecast — an expected-motion prior.
+
+    Returns up to top_n dicts: {ticker, strength (0..1 normalized to #1),
+    raw, direction, why[]}. day_trader_pro ranks/selects on this; the bot's
+    setup_scorer applies a signed ±cap nudge keyed on `strength`.
+    """
+    # macro pressure is market-wide (indices/rate names feel it most); a single
+    # scalar we fold into every name's event term.
+    ahead = [m for m in landmines if not m.get("already_out")]
+    macro_pressure = min(1.0, 0.5 * len(ahead) + (0.5 if fomc else 0.0))
+
+    raw = []
+    for t in tickers:
+        tk = t.get("ticker")
+        if not tk:
+            continue
+        catalyst = abs(float(t.get("score") or 0.0))          # signed-composite magnitude
+        conv     = float(t.get("conviction") or 0.0)          # 0..1 coverage
+        event    = 0.0
+        why = []
+        if tk in earn_today_syms:
+            event = max(event, 1.0); why.append("earnings today")
+        elif t.get("earnings_this_week"):
+            event = max(event, 0.5); why.append("earnings this week")
+        if macro_pressure > 0:
+            event = max(event, macro_pressure)
+            if fomc: why.append("FOMC day")
+            elif ahead: why.append("macro landmine ahead")
+        if catalyst > 0:
+            why.append(f"catalyst {t.get('direction','NEUTRAL').lower()}")
+        # blend — catalyst-led, event pressure second, conviction third
+        move = 0.5 * catalyst + 0.3 * event + 0.2 * conv
+        raw.append({"ticker": tk, "raw": round(move, 4),
+                    "direction": t.get("direction", "NEUTRAL"), "why": why})
+
+    raw.sort(key=lambda r: r["raw"], reverse=True)
+    top = raw[:top_n]
+    peak = top[0]["raw"] if top and top[0]["raw"] > 0 else 1.0
+    for r in top:
+        # normalize to #1 == 1.0; floor keeps the 8th meaningfully weighted
+        r["strength"] = round(max(0.15, r["raw"] / peak), 3) if peak > 0 else 0.15
+    return top
 
 
 def build_report_dict(
@@ -131,12 +185,16 @@ def build_report_dict(
         except Exception:  # noqa: BLE001
             fomc = False
 
+    earn_today_syms = {r["symbol"] for r in earn_today}
+    move_ranked = _move_ranked(tickers, earn_today_syms, fomc, landmines, top_n=8)
+
     return {
         "date": today.isoformat(),
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "fomc_day": fomc,
         "scores": scores,
         "tickers": tickers,
+        "move_ranked": move_ranked,
         "landmines": landmines,
         "earnings_today": earn_today,
         "notes": (
