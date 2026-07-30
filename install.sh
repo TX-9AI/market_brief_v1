@@ -126,7 +126,22 @@ deactivate
 ok "Dependencies installed (anthropic, requests)."
 
 # ── STEP 5: .env + systemd timer ────────────────────────────────────────────
-step "5/6" ".env + systemd timer (09:15 ET, Mon–Fri)"
+# 2026-07-29 — TWO CHANGES, both to close a silent failure found this day:
+#  (a) morning timer moved 09:15 -> 09:00 ET. day_trader_pro's own morning wake
+#      fires at 09:15:00, i.e. the SAME MINUTE this brief started, so the wake
+#      could read a report the brief had not finished writing. Measured runtime
+#      is ~75s (timer 09:15:00 -> generated_at_utc 09:16:15 on 2026-07-29), so
+#      09:00 leaves a ~15 minute margin instead of a race.
+#  (b) DTP_REPORT_JSON is now written into .env. emit.py resolves its output as
+#      explicit arg -> $DTP_REPORT_JSON -> os.getcwd()/report.json, and the
+#      variable had never been set ANYWHERE — it existed only inside emit.py's
+#      own docstring saying to set it. So the brief wrote to its own directory
+#      while day_trader_pro read a different file, which sat frozen at
+#      2026-07-06 for 23 days: same 13 boxes woken every morning, and the
+#      signed sentiment nudge stuck at a constant 0.3. Note this heredoc
+#      OVERWRITES .env wholesale, so hand-editing the live file does not
+#      survive a reinstall — it has to live here.
+step "5/6" ".env + systemd timer (09:00 ET, Mon–Fri)"
 ENV_FILE="$INSTALL_DIR/.env"
 cat > "$ENV_FILE" << ENVEOF
 SCREENER_TIER=${SCREENER_TIER}
@@ -140,6 +155,7 @@ POLITICAL_ARCHIVE_URL=https://ix.cnn.io/data/truth-social/truth_archive.json
 POLITICAL_PUSH_ENDPOINT=
 SCREENER_DB=${INSTALL_DIR}/screener.db
 SCREENER_DRY_RUN=0
+DTP_REPORT_JSON=${DTP_REPORT_JSON:-$HOME/day_trader_pro/data/report.json}
 ENVEOF
 chmod 600 "$ENV_FILE"
 ok ".env written (chmod 600)."
@@ -164,7 +180,7 @@ sudo tee /etc/systemd/system/${SERVICE_NAME}.timer >/dev/null << 'UNIT'
 [Unit]
 Description=Run market_brief weekdays 09:15 ET
 [Timer]
-OnCalendar=Mon..Fri *-*-* 09:15:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 09:00:00 America/New_York
 Persistent=true
 [Install]
 WantedBy=timers.target
