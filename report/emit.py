@@ -42,10 +42,37 @@ except Exception:  # noqa: BLE001
     macro_cal = None
 
 
+# v1.5.0 — the consumer's path, used when nothing more specific is given.
+# day_trader_pro's orchestrator reads config.DATA_DIR/report.json; that is the
+# only consumer of this file, so it is the correct DEFAULT rather than a thing
+# an operator must remember to configure.
+_CONSUMER_DEFAULT = os.path.join(os.path.expanduser("~"), "day_trader_pro",
+                                 "data", "report.json")
+
+
 def _default_path() -> str:
+    """Where the brief lands. Explicit `path=` > $DTP_REPORT_JSON > the CONSUMER.
+
+    v1.5.0 — the last fallback was `os.getcwd()/report.json`, and that single
+    line cost 23 days. $DTP_REPORT_JSON was never set anywhere (it existed only
+    in this docstring, instructing that it be set), so emit quietly wrote into
+    its own working directory while day_trader_pro read a DIFFERENT file frozen
+    at 2026-07-06 — same 13 boxes woken every morning, and the signed sentiment
+    nudge pinned at a constant 0.3. Nothing failed; the two projects simply
+    stopped pointing at the same file and neither said so.
+
+    A producer that defaults to its own cwd is how output goes into the void.
+    The default is now the actual consumer. The env var remains an override for
+    non-standard layouts, and cwd survives only as a last resort when the
+    consumer tree is not present at all (a standalone brief install, which is a
+    supported configuration per docs/ARCHITECTURE.md).
+    """
     env = os.environ.get("DTP_REPORT_JSON")
     if env:
         return env
+    consumer_dir = os.path.dirname(_CONSUMER_DEFAULT)
+    if os.path.isdir(consumer_dir):
+        return _CONSUMER_DEFAULT
     return os.path.join(os.getcwd(), "report.json")
 
 
