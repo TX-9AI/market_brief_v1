@@ -56,7 +56,7 @@ def _g(obj, name, default=None):
     return getattr(obj, name, default)
 
 
-def _move_ranked(tickers, earn_today_syms, fomc, landmines, top_n=8):
+def _move_ranked(tickers, earn_today_syms, fomc, landmines, top_n=13):
     """v1.3 — pre-market MOVE-PROBABILITY ranking for day_trader_pro selection.
 
     "Likely to see a move at the RTH open" — a blend, from fields the brief
@@ -186,7 +186,7 @@ def build_report_dict(
             fomc = False
 
     earn_today_syms = {r["symbol"] for r in earn_today}
-    move_ranked = _move_ranked(tickers, earn_today_syms, fomc, landmines, top_n=8)
+    move_ranked = _move_ranked(tickers, earn_today_syms, fomc, landmines, top_n=13)
 
     return {
         "date": today.isoformat(),
