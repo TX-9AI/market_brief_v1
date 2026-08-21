@@ -1,4 +1,4 @@
-# market_brief/report/emit.py — market_brief_v1.3.0
+# market_brief/report/emit.py — market_brief_v1.6.0
 """
 Machine-readable emit of the finished brief.
 
@@ -24,7 +24,15 @@ v1.3.0 — 2026-07-15 — add `move_ranked` sidecar: pre-market top-8 by
          move-probability (catalyst + event pressure + conviction) for
          day_trader_pro's exactly-8 discretionary wake and the bot's signed
          setup-score nudge. Pure addition — scores/tickers/Telegram unchanged.
-Last updated: 2026-07-15
+v1.5.0 — 2026-07-29 — output path defaults to the CONSUMER, not os.getcwd().
+         (The title line was never bumped for this and read v1.3.0 for three
+         weeks while the file documented v1.5.0 behaviour — recorded because a
+         stale title is how two versions of one file come to exist.)
+v1.6.0 — 2026-08-20 — move_ranked ranks the WHOLE panel instead of the top 13.
+         The depth existed to match MAX_DISCRETIONARY; selection is now a
+         hardcoded panel and does not read this file, so the cut only truncated
+         a report the operator reads.
+Last updated: 2026-08-20
 """
 
 from __future__ import annotations
@@ -83,7 +91,7 @@ def _g(obj, name, default=None):
     return getattr(obj, name, default)
 
 
-def _move_ranked(tickers, earn_today_syms, fomc, landmines, top_n=13):
+def _move_ranked(tickers, earn_today_syms, fomc, landmines, top_n=None):
     """v1.3 — pre-market MOVE-PROBABILITY ranking for day_trader_pro selection.
 
     "Likely to see a move at the RTH open" — a blend, from fields the brief
@@ -125,7 +133,11 @@ def _move_ranked(tickers, earn_today_syms, fomc, landmines, top_n=13):
                     "direction": t.get("direction", "NEUTRAL"), "why": why})
 
     raw.sort(key=lambda r: r["raw"], reverse=True)
-    top = raw[:top_n]
+    # v1.6.0 — RANK THE WHOLE PANEL. top_n was 13 to match day_trader_pro's
+    # MAX_DISCRETIONARY, back when this list CHOSE the wake cohort. selector
+    # pins the panel now and never reads it, so a cut at 13 only hides two of
+    # the operator's own fifteen boxes from a report written to be read.
+    top = raw if top_n is None else raw[:top_n]
     peak = top[0]["raw"] if top and top[0]["raw"] > 0 else 1.0
     for r in top:
         # normalize to #1 == 1.0; floor keeps the 8th meaningfully weighted
@@ -213,7 +225,7 @@ def build_report_dict(
             fomc = False
 
     earn_today_syms = {r["symbol"] for r in earn_today}
-    move_ranked = _move_ranked(tickers, earn_today_syms, fomc, landmines, top_n=13)
+    move_ranked = _move_ranked(tickers, earn_today_syms, fomc, landmines)
 
     return {
         "date": today.isoformat(),

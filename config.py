@@ -1,4 +1,4 @@
-# market_brief/config.py — market_brief_v1.5.0
+# market_brief/config.py — market_brief_v1.6.0
 """
 Central configuration for the Vertigo Capital news/Pre-market Brief.
 
@@ -12,7 +12,13 @@ Single source of truth for:
 Nothing in this file should ever contain a live API key or bot token.
 All secrets are read from the environment at runtime (see load_secrets()).
 
-Last updated: 2026-07-04
+v1.6.0 — 2026-08-20 — UNIVERSE == PANEL. The fleet was pared 29 -> 15 and the
+         other 14 instances terminated; the brief was still polling, classifying
+         and SCORING all of them. CORE_TRADED/WATCH_EXTRA are gone (one list, so
+         two cannot disagree), SECTORS is rebuilt to panel membership with
+         FINANCIALS and RATES_MACRO deleted rather than emptied, and an import-
+         time invariant refuses a sector member that is not in the universe.
+Last updated: 2026-08-20
 """
 
 from __future__ import annotations
@@ -22,33 +28,47 @@ from dataclasses import dataclass, field
 
 
 # --------------------------------------------------------------------------
-# 1. UNIVERSE  (guaranteed-core = Jason's live options names; rest = movers)
+# 1. UNIVERSE == THE PANEL  (the boxes that actually exist)
 # --------------------------------------------------------------------------
-# Kept deliberately small: ~30 mega-caps with deep, liquid weekly options.
-# The screener's job is to rank THIS set and surface the hot handful — it is
-# not a broad market scanner. Add names here; the peer map below should be
-# extended in lockstep.
-
-CORE_TRADED = [  # names Jason already runs in the options suite
-    "SPY", "QQQ", "SPX", "AAPL", "MU", "NVDA", "MSFT",
-    "TSLA", "NFLX", "META", "ORCL",
+# v1.6.0 (2026-08-20) — THE UNIVERSE IS NOW THE FLEET, NOT A WATCHLIST.
+#
+# WHY. On 2026-08-20 the trading fleet was pared from 29 boxes to 15 and the
+# other 14 INSTANCES WERE TERMINATED (AAPL COST DIA GLD GS IWM JPM LLY MSFT
+# ORCL SMCI SMH TLT XOM). The brief kept polling all of them: one Finnhub
+# request and one Haiku/Sonnet classify pass per name, every morning, for
+# tickers with no box, no candle feed and no consumer. That is spend with no
+# reader — and worse, those names still landed in `scores`, in `move_ranked`
+# and in the Telegram brief, which is a report describing a fleet that no
+# longer exists.
+#
+# ⚠️ SELECTION NO LONGER HAPPENS HERE, AND THAT IS THE POINT. day_trader_pro's
+# `selector.PANEL` (hardcoded 2026-08-17, panel v2 2026-08-20) pins the trade
+# set; `select()` returns it without consulting this report at all. The brief's
+# remaining jobs are (a) WAKE the boxes via the orchestrator's morning run,
+# (b) be READ by the operator — macro landmines, Fed day, earnings — and
+# (c) score the names that can actually trade. Ranking names that cannot trade
+# serves none of the three.
+#
+# ⚠️ THIS LIST MIRRORS `day_trader_pro/selector.py::PANEL` AND MUST MATCH IT.
+# Two files naming the same fleet is the failure this project keeps finding, so
+# the mirror is PINNED BY A TEST (`tests/check_panel.py`) rather than by
+# comment. When the panel changes, both change in the same commit.
+#
+# ⚠️ ORDER IS LOAD-BEARING, once. `data/sources.py` uses this order as the
+# Alpha Vantage ticker-filter priority and AV is capped at AV_MAX_TICKERS (10)
+# because a long ticker list makes the whole AV call fail. Every equity here is
+# polled INDIVIDUALLY on Finnhub regardless, so the AV cap costs the tail names
+# a supplementary source, never their coverage. The order below is the panel's
+# own (ranked by trade count, per selector.py) — not re-sorted here.
+PANEL = [
+    "NVDA", "SPX", "PLTR", "MU", "QQQ", "GOOGL", "AMZN", "AVGO",
+    "TSLA", "META", "NFLX", "CRM", "UNH", "CVX", "AMD",
 ]
 
-WATCH_EXTRA = [  # requested additions + high-beta / rate-sensitive movers
-    "PLTR",              # requested
-    "JPM", "GS",         # big financials (rate-sensitive)
-    "LLY", "UNH",        # mega-cap pharma / managed care
-    "AMZN", "GOOGL",     # mega tech
-    "AVGO", "AMD",       # semis complex
-    "SMH",               # semis ETF (sector tell)
-    "XOM", "CVX",        # energy majors
-    "IWM", "DIA",        # breadth / small-cap + dow
-    "TLT",               # long bond proxy (rate regime)
-    "GLD",               # gold proxy (macro / risk-off tell)
-    "CRM", "COST",       # liquid single-name movers
-]
-
-UNIVERSE = CORE_TRADED + WATCH_EXTRA  # ~30 tickers
+# The screener ranks THIS set. There is no second, wider watchlist: a name the
+# fleet cannot trade is a name this brief does not poll, classify, score or
+# print.
+UNIVERSE = list(PANEL)  # 15 tickers == 15 boxes
 
 
 # --------------------------------------------------------------------------
@@ -56,17 +76,52 @@ UNIVERSE = CORE_TRADED + WATCH_EXTRA  # ~30 tickers
 #    never "who are the peers". Keeps the Sonnet prompt narrow & cheap.)
 # --------------------------------------------------------------------------
 # sector -> tickers in-universe that belong to it.
+# v1.6.0 — rebuilt to panel membership. FINANCIALS (JPM, GS) and RATES_MACRO
+# (TLT, GLD) are GONE, not emptied: every member was terminated.
+#
+# ⚠️ AN EMPTY SECTOR IS WORSE THAN A MISSING ONE. These keys are handed to the
+# model as the allowed `scope=SECTOR` labels. A label that survives with no
+# members is one the model can legitimately choose, after which peer expansion
+# returns nothing and the story evaporates with no error — plausible silence in
+# its purest form. A label that does not exist cannot be chosen, and the
+# alias table in peer_map is validated against this dict for the same reason.
+#
+# ⚠️ SINGLE-MEMBER SECTORS ARE CORRECT, NOT BROKEN. ENERGY, HEALTHCARE and
+# CONSUMER each have one panel name left. Spillover for them resolves to zero
+# peers, which is the true answer — there is nobody left on the fleet to spill
+# to — and the label still does its real job of telling the deep pass the story
+# is sector-wide rather than company-specific.
+#
+# ⚠️ AND THE SPILLOVER THE PARING COST IS REAL, RECORDED SO IT IS NOT
+# REDISCOVERED AS A BUG. AAPL, MSFT and SMH were never traded but they were the
+# mega-tech and semis BELLWETHERS: an Apple story used to spill 0.35 onto
+# GOOGL/AMZN/META/NVDA/CRM. Off the universe, an Apple story is not ingested at
+# all. Same for SPY into BROAD_INDEX — and SPX is in `_NON_EQUITY`, so it is
+# never polled directly and now takes its sector read from QQQ alone.
 SECTORS = {
-    "MEGA_TECH":   ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "ORCL", "CRM"],
-    "SEMIS":       ["NVDA", "MU", "AVGO", "AMD", "SMH"],
-    "ENERGY":      ["XOM", "CVX"],
-    "FINANCIALS":  ["JPM", "GS"],
-    "HEALTHCARE":  ["LLY", "UNH"],
-    "CONSUMER":    ["COST", "AMZN"],
+    "MEGA_TECH":   ["NVDA", "AMZN", "GOOGL", "META", "CRM"],
+    "SEMIS":       ["NVDA", "MU", "AVGO", "AMD"],
+    "ENERGY":      ["CVX"],
+    "HEALTHCARE":  ["UNH"],
+    "CONSUMER":    ["AMZN"],
     "GROWTH_SPEC": ["TSLA", "PLTR", "NFLX"],
-    "RATES_MACRO": ["TLT", "GLD"],
-    "BROAD_INDEX": ["SPY", "QQQ", "SPX", "IWM", "DIA"],
+    "BROAD_INDEX": ["QQQ", "SPX"],
 }
+
+# v1.6.0 — DRIFT INVARIANT, checked at import. A sector member that is not in
+# the universe produces spillover signals for a ticker nothing else in the run
+# will ever score, and it fails silently. This is the one place the two lists
+# can diverge, so it is the one place that refuses to start.
+_ORPHANS = sorted({t for m in SECTORS.values() for t in m} - set(UNIVERSE))
+if _ORPHANS:
+    raise ValueError(
+        f"config.SECTORS names tickers outside UNIVERSE: {_ORPHANS}. "
+        "Update both together — see section 1.")
+_EMPTY = sorted(k for k, m in SECTORS.items() if not m)
+if _EMPTY:
+    raise ValueError(
+        f"config.SECTORS has empty sector(s): {_EMPTY}. Delete the key rather "
+        "than leaving a label the model can choose and nothing can satisfy.")
 
 # ticker -> its home sector(s), derived from SECTORS (spillover uses this).
 def _build_ticker_sectors() -> dict[str, list[str]]:

@@ -1,4 +1,4 @@
-# market_brief/main.py — market_brief_v1.6.0
+# market_brief/main.py — market_brief_v1.6.1
 """
 Orchestrator.
 
@@ -21,7 +21,11 @@ v1.6.0 — 2026-07-08 — classify per ticker (concurrent) instead of dedup ->
          collapses to group-by-ticker -> one call per name. Signal shape
          unchanged, so aggregate/report/db/intraday are untouched.
 
-Last updated: 2026-07-08
+v1.6.1 — 2026-08-20 — --selftest/--preview sample uses panel names (XOM -> CVX,
+         ORCL -> CRM). Both were terminated boxes; the off-panel filter added in
+         aggregate v1.1.0 dropped XOM, and preview would have printed a ticker
+         the fleet cannot trade.
+Last updated: 2026-08-20
 """
 
 from __future__ import annotations
@@ -335,7 +339,12 @@ def _build_sample(tier):
         {"ticker": "TSLA", "sentiment": -0.6, "magnitude": 0.7, "weight": 1.0,
          "event_type": "REGULATORY", "is_spillover": False,
          "created_utc": now - dt.timedelta(hours=12), "one_line": "recall probe"},
-        {"ticker": "XOM", "sentiment": 0.45, "magnitude": 0.6, "weight": 1.0,
+        # v1.6.1 — XOM -> CVX. XOM's box was terminated 2026-08-20, so the
+        # fixture's energy name was dropped by the new off-panel filter and
+        # --preview would have shown the operator a ticker with no box. A
+        # sample that describes a fleet which no longer exists is a sample
+        # that teaches the wrong shape.
+        {"ticker": "CVX", "sentiment": 0.45, "magnitude": 0.6, "weight": 1.0,
          "event_type": "GENERAL", "is_spillover": False, "created_utc": now,
          "one_line": "crude pops on supply headline"},
     ]
@@ -357,7 +366,7 @@ def _build_sample(tier):
     earnings_events = [
         earnings_cal.EarningsEvent(symbol="NVDA",
             date=day + dt.timedelta(days=1), session="amc", eps_estimate=1.12),
-        earnings_cal.EarningsEvent(symbol="ORCL",
+        earnings_cal.EarningsEvent(symbol="CRM",
             date=day + dt.timedelta(days=2), session="bmo", eps_estimate=None),
     ]
     return comps, macro_events, earnings_events, report_et

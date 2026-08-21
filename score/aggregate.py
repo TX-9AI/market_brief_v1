@@ -1,4 +1,4 @@
-# market_brief/score/aggregate.py — market_brief_v1.0.0
+# market_brief/score/aggregate.py — market_brief_v1.1.0
 """
 Aggregation — collapse many signals into one composite per ticker.
 
@@ -13,7 +13,12 @@ Surprise term (mid/premium only): delta of today's composite vs a trailing
 baseline. A name that just FLIPPED hard is more actionable than one that's
 been mildly positive all week — surprise catches that.
 
-Last updated: 2026-07-04
+v1.1.0 — 2026-08-20 — composites are restricted to config.UNIVERSE, counted
+         and named. A scheduled run aggregates PERSISTED signals over a 24-96h
+         window, so shrinking the universe alone left every terminated name
+         scoring from the database for days. This is the choke point every
+         consumer reads.
+Last updated: 2026-08-20
 """
 
 from __future__ import annotations
@@ -64,6 +69,40 @@ def compute_composites(
     """
     trailing_baseline = trailing_baseline or {}
     buckets: dict[str, dict[str, Any]] = {}
+
+    # v1.1.0 — OFF-UNIVERSE RECORDS ARE DROPPED HERE, AND THIS IS THE HOP THAT
+    # MATTERS. Shrinking config.UNIVERSE stops the brief INGESTING a name; it
+    # does not stop it SCORING one. A scheduled run does not aggregate the
+    # signals it just built — it re-reads `db.signals_since(cutoff)`, a 24-96h
+    # window of PERSISTED rows. So on the first mornings after the fleet was
+    # pared 29 -> 15, every terminated name still in that window would have
+    # scored, ranked and printed exactly as before, from a database the config
+    # change cannot reach. Filtering at ingest would have looked like it worked
+    # and been wrong for four days.
+    #
+    # This is the single choke point: builder (the Telegram brief), emit
+    # (report.json -> the wake), db.insert_composites and the validation cycle
+    # all consume this return value, so one filter covers every consumer and
+    # none of them can disagree about who is on the fleet.
+    #
+    # ⚠️ THE DROP IS COUNTED AND NAMED, NEVER SILENT. A record vanishing with no
+    # word is indistinguishable from a source that went dark — the failure this
+    # project has paid for repeatedly. Expect this line to be noisy for ~4 days
+    # after a panel change and then go quiet; if it never goes quiet, something
+    # is still writing signals for names that are not on the fleet.
+    _universe = set(config.UNIVERSE)
+    _dropped: dict[str, int] = {}
+    kept: list[dict[str, Any]] = []
+    for r in records:
+        if r["ticker"] in _universe:
+            kept.append(r)
+        else:
+            _dropped[r["ticker"]] = _dropped.get(r["ticker"], 0) + 1
+    if _dropped:
+        detail = ", ".join(f"{t}x{n}" for t, n in sorted(_dropped.items()))
+        print(f"[aggregate] dropped {sum(_dropped.values())} signal(s) for "
+              f"{len(_dropped)} ticker(s) NOT on the panel: {detail}")
+    records = kept
 
     for r in records:
         t = r["ticker"]

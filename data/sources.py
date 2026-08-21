@@ -1,4 +1,4 @@
-# market_brief/data/sources.py — market_brief_v1.4.0
+# market_brief/data/sources.py — market_brief_v1.5.0
 """
 News ingestion from APIs (never scraping paywalled sites).
 
@@ -13,7 +13,11 @@ with a warning; the run continues (free tier still works on Finnhub alone).
 AV/Finnhub also return a baseline sentiment we carry as a pre-LLM hint —
 this is the "cheap stage" that lets Haiku/Sonnet focus only on what matters.
 
-Last updated: 2026-07-04
+v1.5.0 — 2026-08-20 — AV ticker priority reads config.UNIVERSE order directly;
+         config.CORE_TRADED is gone with the panel collapse. Per-ticker Finnhub
+         polling now covers 14 equities instead of 28 — the 14 terminated boxes
+         were still being requested every morning.
+Last updated: 2026-08-20
 """
 
 from __future__ import annotations
@@ -108,9 +112,13 @@ def fetch_alphavantage(key: str, lookback_hours: int, limit: int = 200) -> list[
     since = _utc_now() - dt.timedelta(hours=lookback_hours)
     time_from = since.strftime("%Y%m%dT%H%M")
 
-    # CORE_TRADED first (highest priority), capped — see AV_MAX_TICKERS note.
-    priority = config.CORE_TRADED + [t for t in _equity_universe() if t not in config.CORE_TRADED]
-    tickers_subset = [t for t in priority if t not in _NON_EQUITY][:AV_MAX_TICKERS]
+    # v1.5.0 — priority IS config.UNIVERSE's order. Until now this read
+    # config.CORE_TRADED, a second list that had to agree with the first; the
+    # panel collapse (config v1.6.0) removed it, and the panel's own order is
+    # already the priority order (ranked by trade count in selector.PANEL).
+    # Capped — see AV_MAX_TICKERS. The tail names lose a SUPPLEMENTARY source
+    # only: every equity here is polled individually on Finnhub above.
+    tickers_subset = [t for t in _equity_universe()][:AV_MAX_TICKERS]
 
     result = _av_call(key, {"tickers": ",".join(tickers_subset), "time_from": time_from,
                             "sort": "LATEST", "limit": limit})
