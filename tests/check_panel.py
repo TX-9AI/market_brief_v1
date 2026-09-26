@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-# market_brief/tests/check_panel.py — market_brief_v1.0.0
+# market_brief/tests/check_panel.py — market_brief_v1.1.0
 """
 The brief's universe must BE the fleet. This checks that, by execution.
 
+v1.1.0 — 2026-09-26 — READS selector.py's PANEL instead of mirroring it. This
+         file existed to catch drift between two copies of the panel and kept
+         a THIRD, hand-maintained copy to do the catching; when the fleet went
+         to 17 that copy stayed at 15 and the gate reported a disagreement
+         between the brief and the fleet that did not exist. A checker that
+         mirrors the thing it checks can only add a place to drift.
 v1.0.0 — 2026-08-20 — written with the config v1.6.0 panel collapse.
 
 WHY IT EXISTS. `config.UNIVERSE` and `day_trader_pro/selector.py::PANEL` name
@@ -42,13 +48,38 @@ from classify import peer_map                    # noqa: E402
 from report import emit                          # noqa: E402
 from score.aggregate import compute_composites   # noqa: E402
 
-# The fleet, as pinned in day_trader_pro/selector.py::PANEL (panel v2,
-# 2026-08-20). When the panel changes, BOTH repos change in the same commit and
-# this literal is the thing that notices if only one did.
-SELECTOR_PANEL = [
-    "NVDA", "SPX", "PLTR", "MU", "QQQ", "GOOGL", "AMZN", "AVGO",
-    "TSLA", "META", "NFLX", "CRM", "UNH", "CVX", "AMD",
-]
+# 🔴 v1.1.0 — 2026-09-26 — THIS FILE WAS ITSELF A MIRROR, AND IT WENT STALE.
+# The panel lived in FIVE places; this checker existed to catch drift between
+# two of them and held a SIXTH hand-maintained copy to do it. When AAL and SOFI
+# joined the fleet, `day_trader_pro/selector.py::PANEL` was updated to 17 and
+# THIS LITERAL was not, so the gate reported the brief and the fleet disagreed
+# when in fact the brief and the FLEET agreed and only the gate was behind.
+# ⚠️ A CHECKER THAT MIRRORS THE THING IT CHECKS CAN ONLY EVER ADD A PLACE TO
+# DRIFT. It now READS selector.py's PANEL as the one source. A missing or
+# unparseable selector.py is a LOUD failure, never an empty list that would
+# make every comparison below vacuously pass.
+_SELECTOR = os.path.expanduser("~/day_trader_pro/selector.py")
+
+
+def _load_selector_panel() -> list[str]:
+    import ast
+    with open(_SELECTOR) as fh:
+        tree = ast.parse(fh.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") == "PANEL" for t in node.targets):
+            return [ast.literal_eval(e) for e in node.value.elts]
+    raise RuntimeError(f"no PANEL assignment found in {_SELECTOR}")
+
+
+try:
+    SELECTOR_PANEL = _load_selector_panel()
+except Exception as _exc:                                        # noqa: BLE001
+    print(f"  FATAL  cannot read the fleet panel from {_SELECTOR}: {_exc}")
+    print("  This check compares the brief against the FLEET. Without the "
+          "fleet's own list there is nothing to compare, and a green here "
+          "would mean only that the comparison never ran.")
+    sys.exit(2)
 
 PROBLEMS: list[str] = []
 

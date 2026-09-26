@@ -1,4 +1,4 @@
-# market_brief/config.py — market_brief_v1.6.0
+# market_brief/config.py — market_brief_v1.7.0
 """
 Central configuration for the Vertigo Capital news/Pre-market Brief.
 
@@ -12,6 +12,15 @@ Single source of truth for:
 Nothing in this file should ever contain a live API key or bot token.
 All secrets are read from the environment at runtime (see load_secrets()).
 
+v1.7.0 — 2026-09-26 — PANEL 15 -> 17. AAL and SOFI joined the fleet on
+         2026-09-24 and traded from 2026-09-25. ⚠️ THIS REPO WAS A FOURTH
+         MIRROR OF THE PANEL AND NOTHING PINNED IT: r423 took the fleet to 17
+         in three places and left this one at 15, so for one session the brief
+         polled fifteen of the seventeen boxes it is supposed to cover. The
+         file's own rule — *"a name the fleet cannot trade is a name this
+         brief does not poll"* — held; its converse did not. SECTORS gains
+         AIRLINES and FINTECH, single-member on purpose (see section 2: a
+         manufactured peer would manufacture spillover).
 v1.6.0 — 2026-08-20 — UNIVERSE == PANEL. The fleet was pared 29 -> 15 and the
          other 14 instances terminated; the brief was still polling, classifying
          and SCORING all of them. CORE_TRADED/WATCH_EXTRA are gone (one list, so
@@ -63,12 +72,19 @@ from dataclasses import dataclass, field
 PANEL = [
     "NVDA", "SPX", "PLTR", "MU", "QQQ", "GOOGL", "AMZN", "AVGO",
     "TSLA", "META", "NFLX", "CRM", "UNH", "CVX", "AMD",
+    # 🔴 2026-09-25 — AAL and SOFI joined the fleet 09-24 and TRADE from today.
+    # This repo is a FOURTH mirror of the panel and `test_panel_mirror` does not
+    # pin it — it covers otv4, dtp and s3_sweep only — so r423's 15 -> 17 landed
+    # in three places and left this one behind. The file's own rule is that "a
+    # name the fleet cannot trade is a name this brief does not poll"; the
+    # converse is what was broken.
+    "AAL", "SOFI",
 ]
 
 # The screener ranks THIS set. There is no second, wider watchlist: a name the
 # fleet cannot trade is a name this brief does not poll, classify, score or
 # print.
-UNIVERSE = list(PANEL)  # 15 tickers == 15 boxes
+UNIVERSE = list(PANEL)  # 17 tickers == 17 boxes
 
 
 # --------------------------------------------------------------------------
@@ -106,6 +122,12 @@ SECTORS = {
     "CONSUMER":    ["AMZN"],
     "GROWTH_SPEC": ["TSLA", "PLTR", "NFLX"],
     "BROAD_INDEX": ["QQQ", "SPX"],
+    # 2026-09-25 — the two TEST-lineage boxes. Single-member sectors are
+    # correct, not broken (see the note above): neither has a peer on this
+    # panel, and inventing one would manufacture spillover between names that
+    # have no real relationship.
+    "AIRLINES":    ["AAL"],
+    "FINTECH":     ["SOFI"],
 }
 
 # v1.6.0 — DRIFT INVARIANT, checked at import. A sector member that is not in

@@ -1,4 +1,27 @@
-# market_brief/main.py — market_brief_v1.6.1
+# market_brief/main.py — market_brief_v1.7.0
+# v1.7.0 (2026-09-26) — THE INFORMATION BRIEF IS THE DEFAULT PATH.
+#   Operator, 2026-09-25: *"have that be Information only. No LLM's. Or
+#   discretionary decisions—just a brief and that's it. The reason for this is
+#   the market brief never actually correlated with the days Trading."*
+#   `run_information_brief()` replaces `run_scheduled()` as the fallthrough;
+#   the old path is STRUCK, not deleted (r240), reachable only via
+#   --signal-legacy and on no timer. 🔑 THIS CLOSES THE READER HALF OF otv4
+#   C.46 (r382), which ruled eleven days ago that no unvalidated score is
+#   "shown to a trader, ranked into a look-here-first list, or read by a bot" —
+#   the BOT half was closed at OTV4 r152 and the brief went on printing
+#   "BOTTOM LINE — LOOK HERE FIRST" to a phone every weekday since.
+#   ⚠️ MACRO IS DARK AND SAYS SO. Finnhub's structured economic calendar is
+#   paywalled (live 403 on a free key) so the only working macro source this
+#   repo ever had was a web-search MODEL call. It is gone, and the section now
+#   renders UNAVAILABLE WITH THE REASON rather than printing "nothing
+#   scheduled" over a source that was never asked. Re-lighting it needs a free
+#   structured calendar, not a smaller model.
+#   📊 `fetch_prices` MUST be passed max_tickers: it defaults to
+#   VALIDATION_MAX_TICKERS (10) and slices silently, so seven of seventeen
+#   names — AAL and SOFI among them — were never REQUESTED while the brief
+#   printed "No quote for: ...". We would have been reading our own cap as the
+#   market's silence.
+#   GATE: tests/check_information_brief.py I1-I5, mutation-proven five ways.
 """
 Orchestrator.
 
@@ -49,6 +72,103 @@ from report import builder, telegram
 
 def _now_utc() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
+
+
+
+# ── THE INFORMATION BRIEF (2026-09-26) ──────────────────────────────────────
+# Operator, 2026-09-25: *"have that be Information only. No LLM's. Or
+# discretionary decisions—just a brief and that's it."*
+#
+# 🔑 THIS IS THE DEFAULT PATH NOW. `run_scheduled` below is STRUCK, NOT
+# DELETED (r240): it still runs behind `--signal-legacy`, because deleting the
+# classifier would also delete the only record of how the scores that C.46
+# ruled on were built. It is not on any timer.
+#
+# ⚠️ NO LLMClient IS CONSTRUCTED ON THIS PATH, and that is checked by
+# EXECUTION in tests/check_information_brief.py (I1 poisons the constructor and
+# runs the whole brief), not by grepping for the name.
+#
+# 🔴 MACRO IS DARK ON PURPOSE AND SAYS SO. Finnhub's structured economic
+# calendar is gated behind a paid plan — confirmed by a live 403 on a free key,
+# see config.py "6b" — so the ONLY working macro source this repo ever had was
+# a web-search-grounded model call. That call is a model call, so it is gone,
+# and the section now renders UNAVAILABLE with the reason attached rather than
+# printing "nothing scheduled" over a source that was never asked. A brief that
+# silently claims a quiet calendar on FOMC morning is worse than one that
+# admits it does not know. Wiring a free structured calendar re-lights it.
+def run_information_brief(tier, secrets, dry_run: bool) -> int:
+    """Facts only: macro clock, earnings this week, headlines A-Z, last price."""
+    from report import information
+
+    now = _now_utc()
+    report_dt_et = now.astimezone(ZoneInfo(config.REPORT_TZ))
+    universe = list(config.UNIVERSE)
+    avail = {"macro": True, "earnings": True, "news": True, "prices": True}
+    why: dict[str, str] = {}
+
+    # 1. MACRO — structured source only. Never a model.
+    macro_events = []
+    try:
+        macro_events = macro_cal.fetch_macro(
+            secrets.finnhub_key, report_dt_et.date(), report_et=report_dt_et) or []
+    except Exception as exc:                                      # noqa: BLE001
+        avail["macro"], why["macro"] = False, type(exc).__name__
+    else:
+        if not macro_events:
+            # An empty structured return is NOT evidence of a quiet calendar
+            # here: the endpoint 403s on this plan, so empty is what a refusal
+            # looks like. Named as a refusal rather than rendered as a fact.
+            avail["macro"] = False
+            why["macro"] = "structured calendar not on this plan"
+
+    # 2. EARNINGS — free tier, structured. Empty here IS a real empty.
+    earnings_events = []
+    try:
+        earnings_events = earnings_cal.fetch_earnings(
+            secrets.finnhub_key, report_dt_et.date()) or []
+    except Exception as exc:                                      # noqa: BLE001
+        avail["earnings"], why["earnings"] = False, type(exc).__name__
+
+    # 3. HEADLINES — feed-attributed (`tickers_hint`), never model-attributed.
+    headlines = []
+    try:
+        headlines = sources.fetch_all(secrets, tier, config.LOOKBACK_HOURS) or []
+    except Exception as exc:                                      # noqa: BLE001
+        avail["news"], why["news"] = False, type(exc).__name__
+
+    # 4. PRICES
+    prices = {}
+    try:
+        # ⚠️ max_tickers MUST be passed. It defaults to VALIDATION_MAX_TICKERS
+        # (10) and silently slices `tickers[:10]`, so on a 17-name panel the
+        # last seven — AAL and SOFI among them — were never REQUESTED, and the
+        # brief rendered "No quote for: ..." as though the feed had declined.
+        # We would have been reading our own cap as the market's silence.
+        prices = price_data.fetch_prices(universe, max_tickers=len(universe)) or {}
+    except Exception as exc:                                      # noqa: BLE001
+        avail["prices"], why["prices"] = False, type(exc).__name__
+
+    text, payload = information.build_information_brief(
+        macro_events=macro_events, earnings_events=earnings_events,
+        headlines=headlines, prices=prices, report_dt_et=report_dt_et,
+        availability=avail, universe=universe, reasons=why)
+
+    path = (os.environ.get("DTP_REPORT_JSON")
+            or os.path.join(config.DATA_DIR, "report.json"))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(payload, fh, indent=2)
+        os.replace(tmp, path)
+    except Exception as exc:                                      # noqa: BLE001
+        print(f"[brief] report.json NOT written: {type(exc).__name__}: {exc}")
+
+    telegram.send(text, secrets)
+    dark = [k for k, v in avail.items() if not v]
+    print(f"[brief] information brief for {len(universe)} symbols"
+          + (f" · NO ANSWER from {dark}" if dark else " · all sources answered"))
+    return 0
 
 
 def run_scheduled(tier: config.TierSpec, secrets, dry_run: bool) -> int:
@@ -571,6 +691,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--tier", choices=list(config.TIERS), help="override SCREENER_TIER")
     p.add_argument("--dry-run", action="store_true", help="print, don't send/record")
     p.add_argument("--intraday", action="store_true", help="premium shock scan")
+    p.add_argument("--signal-legacy", action="store_true",
+                   help="the STRUCK pre-C.46 scoring brief (LLM). Not on a timer.")
     p.add_argument("--selftest", action="store_true", help="offline smoke test")
     p.add_argument("--preview", action="store_true",
                    help="send a SAMPLE rollup+shock to Telegram (bot token only)")
@@ -604,7 +726,9 @@ def main(argv: list[str] | None = None) -> int:
         return run_testfeeds(secrets, tier)
     if args.intraday:
         return run_intraday(tier, secrets, args.dry_run)
-    return run_scheduled(tier, secrets, args.dry_run)
+    if args.signal_legacy:
+        return run_scheduled(tier, secrets, args.dry_run)
+    return run_information_brief(tier, secrets, args.dry_run)
 
 
 if __name__ == "__main__":
