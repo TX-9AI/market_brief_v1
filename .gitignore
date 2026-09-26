@@ -47,3 +47,4 @@ Thumbs.db
 *.zip
 report.json
 report.json
+data/fomc_cache.json
