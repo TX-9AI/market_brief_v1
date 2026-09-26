@@ -52,6 +52,15 @@ from typing import Any
 
 import config
 
+def _clock_note() -> str:
+    try:
+        from data.macro_fred import CLOCK_DISCLAIMER
+        return CLOCK_DISCLAIMER
+    except Exception:                                             # noqa: BLE001
+        return ("Release times are a publishing convention, not a sourced "
+                "field.")
+
+
 _HEADLINES_SHOWN = 2      # titles per symbol; the count carries the rest
 
 _SESS_SHORT = {"bmo": "BMO", "amc": "AMC", "dmh": "DMH", "unknown": "TBD"}
@@ -132,6 +141,11 @@ def build_information_brief(
         if ahead:
             L.append("_Still ahead:_")
             L.extend(ahead)
+        # 🔴 THE CLOCK IS A CONVENTION AND THE READER IS TOLD SO. FRED returns
+        # a DATE and no TIME; the times above are the publishing agency's
+        # standing habit. A convention set in the same typeface as a
+        # measurement is how a number nobody sourced gets acted on.
+        L.append(f"_{_clock_note()}_")
     L.append("")
 
     # ── EARNINGS THIS WEEK, A-Z ─────────────────────────────────────────

@@ -253,6 +253,30 @@ def main() -> int:
            "empty and unavailable are distinct in every section, one source "
            "at a time" if not bad else "; ".join(bad))
 
+    # ── I6 — THE CLOCK DISCLAIMER REACHES THE PAGE, NOT JUST THE MODULE ─
+    # ⚠️ check_macro_fred's M3 asserts the CONSTANT exists. A constant that is
+    # never rendered protects nobody: the reader acts on the printed line.
+    # This is the same split that let otv4's BRIEF_CONVICTION_WEIGHT sit in
+    # config for months with zero readers while everyone assumed it was live.
+    if information is None:
+        ck("I6", False, _abs_info)
+    else:
+        from zoneinfo import ZoneInfo as _Z
+        from data.macro_cal import MacroEvent as _ME
+        ev = _ME(event_type="10", label="CPI",
+                 release_et=dt.datetime(2026, 9, 28, 8, 30,
+                                        tzinfo=_Z("America/New_York")),
+                 magnitude=3, window="pre")
+        text, _ = information.build_information_brief(
+            macro_events=[ev], earnings_events=[], headlines=[], prices={},
+            report_dt_et=_dt_et(), availability=_availability())
+        low = text.lower()
+        ck("I6", "convention" in low,
+           "the rendered brief states the release times are a convention"
+           if "convention" in low else
+           "the brief prints a clock time and never says FRED supplies no "
+           "time — a convention set in the typeface of a measurement")
+
     # ── I5 — THE JSON CARRIES NO SIGNAL PAYLOAD ─────────────────────────
     if not runner:
         ck("I5", False, _abs_run or _abs_info)

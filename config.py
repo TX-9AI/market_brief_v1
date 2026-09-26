@@ -1,4 +1,4 @@
-# market_brief/config.py — market_brief_v1.7.0
+# market_brief/config.py — market_brief_v1.8.0
 """
 Central configuration for the Vertigo Capital news/Pre-market Brief.
 
@@ -12,6 +12,9 @@ Single source of truth for:
 Nothing in this file should ever contain a live API key or bot token.
 All secrets are read from the environment at runtime (see load_secrets()).
 
+v1.8.0 — 2026-09-26 — Secrets gains `fred_key` (FRED_API_KEY). Free key from
+         fred.stlouisfed.org/docs/api/api_key.html; it is the macro calendar's
+         only input and the section names itself dark without it.
 v1.7.0 — 2026-09-26 — PANEL 15 -> 17. AAL and SOFI joined the fleet on
          2026-09-24 and traded from 2026-09-25. ⚠️ THIS REPO WAS A FOURTH
          MIRROR OF THE PANEL AND NOTHING PINNED IT: r423 took the fleet to 17
@@ -341,6 +344,7 @@ class Secrets:
     finnhub_key: str = ""
     alphavantage_key: str = ""
     benzinga_key: str = ""
+    fred_key: str = ""
     telegram_token: str = ""
     telegram_chat_id: str = ""
 
@@ -382,6 +386,8 @@ def load_secrets() -> Secrets:
         finnhub_key=os.environ.get("FINNHUB_API_KEY", ""),
         alphavantage_key=os.environ.get("ALPHAVANTAGE_API_KEY", ""),
         benzinga_key=os.environ.get("BENZINGA_API_KEY", ""),
+        # v1.8.0 — FRED. Free key: fred.stlouisfed.org/docs/api/api_key.html
+        fred_key=os.environ.get("FRED_API_KEY", ""),
         telegram_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         # Jason's existing chat id is a safe default; token is still env-only.
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "6075312586"),

@@ -1,4 +1,13 @@
-# market_brief/main.py — market_brief_v1.7.0
+# market_brief/main.py — market_brief_v1.8.0
+# v1.8.0 (2026-09-26) — THE MACRO SECTION COMES BACK, ON THE FED'S OWN
+#   SCHEDULE. Operator: *"That is vital information."* `data/macro_fred.py`
+#   replaces the web-search model call removed at v1.7.0. Finnhub is kept as a
+#   SECOND look rather than deleted — its 403 is a plan limit, not a bug, so
+#   if the plan ever changes it starts answering and a live source beats a
+#   convention table. 🔴 FRED RETURNS A DATE AND NO TIME: the clock is our
+#   convention and the brief SAYS SO on the page, not just in a constant.
+#   ⚠️ A truncated reason string rendered "Free key: f" — do not slice a
+#   message that ends in a URL.
 # v1.7.0 (2026-09-26) — THE INFORMATION BRIEF IS THE DEFAULT PATH.
 #   Operator, 2026-09-25: *"have that be Information only. No LLM's. Or
 #   discretionary decisions—just a brief and that's it. The reason for this is
@@ -62,7 +71,7 @@ import sys
 from zoneinfo import ZoneInfo
 
 import config
-from data import sources, macro_cal, earnings_cal, price_data
+from data import sources, macro_cal, macro_fred, earnings_cal, price_data
 from classify import pipeline
 from classify.llm_client import LLMClient
 from score import aggregate
@@ -106,20 +115,33 @@ def run_information_brief(tier, secrets, dry_run: bool) -> int:
     avail = {"macro": True, "earnings": True, "news": True, "prices": True}
     why: dict[str, str] = {}
 
-    # 1. MACRO — structured source only. Never a model.
+    # 1. MACRO — the Fed's own release schedule. Never a model.
+    #    v1.8.0: FRED replaces the web-search call removed at v1.7.0. Finnhub
+    #    stays as a second look ONLY because its 403 is a plan limit rather
+    #    than a bug — if the plan ever changes it starts answering, and a
+    #    live source beats a convention table.
     macro_events = []
     try:
-        macro_events = macro_cal.fetch_macro(
-            secrets.finnhub_key, report_dt_et.date(), report_et=report_dt_et) or []
+        macro_events = macro_fred.fetch_macro_fred(
+            secrets.fred_key, report_dt_et.date()) or []
     except Exception as exc:                                      # noqa: BLE001
-        avail["macro"], why["macro"] = False, type(exc).__name__
+        avail["macro"] = False
+        # ⚠️ Do NOT truncate a message that ends in a URL. The first cut
+        # sliced at 90 chars and rendered "Free key: f", which reads as
+        # corruption rather than instruction. The no-key case gets its own
+        # short reason; the URL lives in the exception for the log.
+        why["macro"] = ("FRED_API_KEY not set" if isinstance(exc, ValueError)
+                        else f"FRED {type(exc).__name__}")
     else:
-        if not macro_events:
-            # An empty structured return is NOT evidence of a quiet calendar
-            # here: the endpoint 403s on this plan, so empty is what a refusal
-            # looks like. Named as a refusal rather than rendered as a fact.
-            avail["macro"] = False
-            why["macro"] = "structured calendar not on this plan"
+        try:
+            extra = macro_cal.fetch_macro(
+                secrets.finnhub_key, report_dt_et.date(),
+                report_et=report_dt_et) or []
+        except Exception:                                         # noqa: BLE001
+            extra = []
+        have = {e.label for e in macro_events}
+        macro_events += [e for e in extra if e.label not in have]
+        macro_events.sort(key=lambda e: e.release_et)
 
     # 2. EARNINGS — free tier, structured. Empty here IS a real empty.
     earnings_events = []
