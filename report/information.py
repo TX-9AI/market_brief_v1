@@ -102,6 +102,7 @@ def build_information_brief(
     availability: dict[str, bool] | None = None,
     universe: list[str] | None = None,
     reasons: dict[str, str] | None = None,
+    fleet_note: str = "",
 ) -> tuple[str, dict[str, Any]]:
     """Returns (markdown, payload). Pure — no network, no model, no state."""
     avail = {"macro": True, "earnings": True, "news": True, "prices": True}
@@ -115,6 +116,8 @@ def build_information_brief(
              f"{report_dt_et.strftime('%a %b %d, %Y')}")
     L.append(f"_{report_dt_et.strftime('%-I:%M %p ET').lower()} · information "
              f"only · {len(uni)} traded symbols_")
+    if fleet_note:                      # v1.10.0 — the morning instance-map vet
+        L.append(f"_{fleet_note}_")
     L.append("")
 
     # ── MACRO, IN CLOCK ORDER ───────────────────────────────────────────
@@ -209,6 +212,7 @@ def build_information_brief(
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "brief_kind": "information",
         "universe": sorted(uni),
+        "fleet_vet": fleet_note,
         "availability": dict(avail),
         "unavailable_because": {k: v for k, v in why.items() if not avail.get(k, True)},
         "macro": [{"event_type": getattr(m, "event_type", None),

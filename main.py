@@ -1,4 +1,11 @@
-# market_brief/main.py — market_brief_v1.8.0
+# market_brief/main.py — market_brief_v1.10.0
+# v1.10.0 (2026-09-29) — THE BRIEF IS VETTED AGAINST THE LIVE INSTANCE MAP
+#   EVERY MORNING. Operator: *"Have the market report vet on the most current
+#   instance map every morning."* `data/instance_map.vet()` runs before any
+#   fetch: the brief covers the boxes EC2 holds under Project=day_trader, the
+#   config list only orders them and is the fallback, and any disagreement is
+#   printed ON THE PAGE and in report.json (`fleet_vet`). Same night: PANEL
+#   17 -> 15, MU and PLTR retired. Gate tests/check_instance_vet.py.
 # v1.8.0 (2026-09-26) — THE MACRO SECTION COMES BACK, ON THE FED'S OWN
 #   SCHEDULE. Operator: *"That is vital information."* `data/macro_fred.py`
 #   replaces the web-search model call removed at v1.7.0. Finnhub is kept as a
@@ -71,7 +78,7 @@ import sys
 from zoneinfo import ZoneInfo
 
 import config
-from data import sources, macro_cal, macro_fred, earnings_cal, price_data
+from data import sources, macro_cal, macro_fred, earnings_cal, price_data, instance_map
 from classify import pipeline
 from classify.llm_client import LLMClient
 from score import aggregate
@@ -111,7 +118,12 @@ def run_information_brief(tier, secrets, dry_run: bool) -> int:
 
     now = _now_utc()
     report_dt_et = now.astimezone(ZoneInfo(config.REPORT_TZ))
-    universe = list(config.UNIVERSE)
+    # v1.10.0 — the symbols are the LIVE instance map, vetted every morning,
+    # not the list. Rebinding config.UNIVERSE is what reaches `sources` and
+    # `earnings_cal`, which read it at call time.
+    universe, fleet_note = instance_map.vet(list(config.UNIVERSE))
+    config.UNIVERSE = list(universe)
+    print(f"[brief] {fleet_note}")
     avail = {"macro": True, "earnings": True, "news": True, "prices": True}
     why: dict[str, str] = {}
 
@@ -173,7 +185,8 @@ def run_information_brief(tier, secrets, dry_run: bool) -> int:
     text, payload = information.build_information_brief(
         macro_events=macro_events, earnings_events=earnings_events,
         headlines=headlines, prices=prices, report_dt_et=report_dt_et,
-        availability=avail, universe=universe, reasons=why)
+        availability=avail, universe=universe, reasons=why,
+        fleet_note=fleet_note)
 
     path = (os.environ.get("DTP_REPORT_JSON")
             or os.path.join(config.DATA_DIR, "report.json"))

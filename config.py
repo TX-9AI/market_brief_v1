@@ -73,7 +73,7 @@ from dataclasses import dataclass, field
 # a supplementary source, never their coverage. The order below is the panel's
 # own (ranked by trade count, per selector.py) — not re-sorted here.
 PANEL = [
-    "NVDA", "SPX", "PLTR", "MU", "QQQ", "GOOGL", "AMZN", "AVGO",
+    "NVDA", "SPX", "QQQ", "GOOGL", "AMZN", "AVGO",
     "TSLA", "META", "NFLX", "CRM", "UNH", "CVX", "AMD",
     # 🔴 2026-09-25 — AAL and SOFI joined the fleet 09-24 and TRADE from today.
     # This repo is a FOURTH mirror of the panel and `test_panel_mirror` does not
@@ -87,7 +87,10 @@ PANEL = [
 # The screener ranks THIS set. There is no second, wider watchlist: a name the
 # fleet cannot trade is a name this brief does not poll, classify, score or
 # print.
-UNIVERSE = list(PANEL)  # 17 tickers == 17 boxes
+UNIVERSE = list(PANEL)  # 15 tickers == 15 boxes (MU, PLTR retired 2026-09-29)
+# ⚠️ v1.10.0 — THIS IS NOW THE ORDER AND THE FALLBACK, NOT THE FLEET. Every
+# morning `data/instance_map.vet()` briefs the live instance map instead and
+# prints any disagreement with this list on the page.
 
 
 # --------------------------------------------------------------------------
@@ -119,11 +122,11 @@ UNIVERSE = list(PANEL)  # 17 tickers == 17 boxes
 # never polled directly and now takes its sector read from QQQ alone.
 SECTORS = {
     "MEGA_TECH":   ["NVDA", "AMZN", "GOOGL", "META", "CRM"],
-    "SEMIS":       ["NVDA", "MU", "AVGO", "AMD"],
+    "SEMIS":       ["NVDA", "AVGO", "AMD"],
     "ENERGY":      ["CVX"],
     "HEALTHCARE":  ["UNH"],
     "CONSUMER":    ["AMZN"],
-    "GROWTH_SPEC": ["TSLA", "PLTR", "NFLX"],
+    "GROWTH_SPEC": ["TSLA", "NFLX"],
     "BROAD_INDEX": ["QQQ", "SPX"],
     # 2026-09-25 — the two TEST-lineage boxes. Single-member sectors are
     # correct, not broken (see the note above): neither has a peer on this
